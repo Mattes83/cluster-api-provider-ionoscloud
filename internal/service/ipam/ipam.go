@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package ipam offers ip address management services for IONOS Cloud machine reconciliation.
+// Package ipam offers services for IPAM management.
 package ipam
 
 import (
@@ -70,33 +70,33 @@ func NewHelper(c client.Client, log logr.Logger) *Helper {
 // This function is a no-op if the IonosCloudMachine has no associated IPAddressClaims.
 func (h *Helper) ReconcileIPAddresses(ctx context.Context, machineScope *scope.Machine) (requeue bool, err error) {
 	log := h.logger.WithName("reconcileIPAddresses")
-	if machineScope.IonosMachine.Status.MachineNetworkInfo != nil {
-		// skip machine has IpAddress already.
-		return false, nil
-	}
 	log.V(4).Info("reconciling IPAddresses.")
 
 	networkInfos := &[]infrav1.NICInfo{}
 
+	waiForIP := false
 	// primary nic.
-	if requeue, err = h.handlePrimaryNIC(ctx, machineScope, networkInfos); err != nil || requeue {
+	waiForIP, err = h.handlePrimaryNIC(ctx, machineScope, networkInfos)
+	if err != nil {
 		return true, errors.Join(err, errors.New("unable to handle primary nic"))
 	}
 
 	if machineScope.IonosMachine.Spec.AdditionalNetworks != nil {
-		if requeue, err = h.handleAdditionalNICs(ctx, machineScope, networkInfos); err != nil || requeue {
+		additionalWait, err := h.handleAdditionalNICs(ctx, machineScope, networkInfos)
+		if err != nil {
 			return true, errors.Join(err, errors.New("unable to handle additional nics"))
 		}
+		waiForIP = waiForIP || additionalWait
 	}
 
 	// update the status
 	log.V(4).Info("updating IonosMachine.status.machineNetworkInfo.")
 	machineScope.IonosMachine.Status.MachineNetworkInfo = &infrav1.MachineNetworkInfo{NICInfo: *networkInfos}
 
-	return true, nil
+	return waiForIP, nil
 }
 
-func (h *Helper) handlePrimaryNIC(ctx context.Context, machineScope *scope.Machine, nics *[]infrav1.NICInfo) (bool, error) {
+func (h *Helper) handlePrimaryNIC(ctx context.Context, machineScope *scope.Machine, nics *[]infrav1.NICInfo) (waitForIP bool, err error) {
 	nic := infrav1.NICInfo{Primary: true}
 	ipamConfig := machineScope.IonosMachine.Spec.IPAMConfig
 	nicName := fmt.Sprintf(PrimaryNICFormat, machineScope.IonosMachine.Name)
@@ -104,62 +104,76 @@ func (h *Helper) handlePrimaryNIC(ctx context.Context, machineScope *scope.Machi
 	// default nic ipv4.
 	if ipamConfig.IPv4PoolRef != nil {
 		ip, err := h.handleIPAddressForNIC(ctx, machineScope, nicName, IPV4Format, ipamConfig.IPv4PoolRef)
-		if err != nil || ip == "" {
-			return true, err
+		if err != nil {
+			return false, err
 		}
-		nic.IPv4Addresses = []string{ip}
+		if ip == "" {
+			waitForIP = true
+		} else {
+			nic.IPv4Addresses = []string{ip}
+		}
 	}
 
 	// default nic ipv6.
 	if ipamConfig.IPv6PoolRef != nil {
 		ip, err := h.handleIPAddressForNIC(ctx, machineScope, nicName, IPV6Format, ipamConfig.IPv6PoolRef)
-		if err != nil || ip == "" {
-			return true, err
+		if err != nil {
+			return false, err
 		}
-		nic.IPv6Addresses = []string{ip}
+		if ip == "" {
+			waitForIP = true
+		} else {
+			nic.IPv6Addresses = []string{ip}
+		}
 	}
 
 	*nics = append(*nics, nic)
 
-	return false, nil
+	return waitForIP, nil
 }
 
-func (h *Helper) handleAdditionalNICs(ctx context.Context, machineScope *scope.Machine, nics *[]infrav1.NICInfo) (bool, error) {
+func (h *Helper) handleAdditionalNICs(ctx context.Context, machineScope *scope.Machine, nics *[]infrav1.NICInfo) (waitForIP bool, err error) {
 	// additional nics.
 	for _, net := range machineScope.IonosMachine.Spec.AdditionalNetworks {
 		nic := infrav1.NICInfo{Primary: false}
 		nicName := fmt.Sprintf(AdditionalNICFormat, machineScope.IonosMachine.Name, net.NetworkID)
 		if net.IPv4PoolRef != nil {
 			ip, err := h.handleIPAddressForNIC(ctx, machineScope, nicName, IPV4Format, net.IPv4PoolRef)
-			if err != nil || ip == "" {
-				return true, errors.Join(err, fmt.Errorf("unable to handle IPAddress for nic %s", nicName))
+			if err != nil {
+				return false, errors.Join(err, fmt.Errorf("unable to handle IPv4Address for nic %s", nicName))
 			}
-
-			nic.IPv4Addresses = []string{ip}
+			if ip == "" {
+				waitForIP = true
+			} else {
+				nic.IPv6Addresses = []string{ip}
+			}
 		}
 
 		if net.IPv6PoolRef != nil {
 			ip, err := h.handleIPAddressForNIC(ctx, machineScope, nicName, IPV6Format, net.IPv6PoolRef)
-			if err != nil || ip == "" {
-				return true, errors.Join(err, fmt.Errorf("unable to handle IPAddress for nic %s", nicName))
+			if err != nil {
+				return false, errors.Join(err, fmt.Errorf("unable to handle IPv6Address for nic %s", nicName))
 			}
-
-			nic.IPv6Addresses = []string{ip}
+			if ip == "" {
+				waitForIP = true
+			} else {
+				nic.IPv6Addresses = []string{ip}
+			}
 		}
 
 		*nics = append(*nics, nic)
 	}
 
-	return false, nil
+	return waitForIP, nil
 }
 
 // handleIPAddressForNIC checks for an IPAddressClaim. If there is one it extracts the ip from the corresponding IPAddress object, otherwise it creates the IPAddressClaim and returns early.
-func (h *Helper) handleIPAddressForNIC(ctx context.Context, machineScope *scope.Machine, nic, format string, poolRef *corev1.TypedLocalObjectReference) (string, error) {
+func (h *Helper) handleIPAddressForNIC(ctx context.Context, machineScope *scope.Machine, nic, format string, poolRef *corev1.TypedLocalObjectReference) (ip string, err error) {
 	log := h.logger.WithName("handleIPAddressForNIC")
 
 	suffix := "ipv4"
 	if format == IPV6Format {
-		suffix += "ipv6"
+		suffix = "ipv6"
 	}
 	key := client.ObjectKey{
 		Namespace: machineScope.IonosMachine.Namespace,
@@ -197,7 +211,7 @@ func (h *Helper) handleIPAddressForNIC(ctx context.Context, machineScope *scope.
 		return "", errors.Join(err, fmt.Errorf("unable to get IPAddress specified in claim %s", claim.Name))
 	}
 
-	ip := ipAddr.Spec.Address
+	ip = ipAddr.Spec.Address
 
 	log.V(4).Info("IPAddress found, ", "ip", ip, "nic", nic)
 
