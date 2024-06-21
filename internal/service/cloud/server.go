@@ -413,13 +413,11 @@ func (s *Service) buildServerEntities(ms *scope.Machine, params serverEntityPara
 
 	if ms.IonosMachine.Status.MachineNetworkInfo != nil {
 		nicInfo := ms.IonosMachine.Status.MachineNetworkInfo.NICInfo[0]
-		primaryNIC.Properties.Dhcp = ptr.To(len(nicInfo.IPv4Addresses) == 0)
 		primaryNIC.Properties.Ips = ptr.To(nicInfo.IPv4Addresses)
-		primaryNIC.Properties.Dhcpv6 = ptr.To(len(nicInfo.IPv6Addresses) == 0)
 		primaryNIC.Properties.Ipv6Ips = ptr.To(nicInfo.IPv6Addresses)
-	} else {
-		primaryNIC.Properties.Dhcp = ptr.To(true)
 	}
+
+	primaryNIC.Properties.Dhcp = ptr.To(true)
 
 	// In case we want to retrieve a public IP from the DHCP, we need to
 	// create a NIC with empty IP addresses and patch the NIC afterward.
@@ -442,11 +440,11 @@ func (s *Service) buildServerEntities(ms *scope.Machine, params serverEntityPara
 
 		if ms.IonosMachine.Status.MachineNetworkInfo != nil {
 			nicInfo := ms.IonosMachine.Status.MachineNetworkInfo.NICInfo[i+1]
-			primaryNIC.Properties.Dhcp = ptr.To(len(nicInfo.IPv4Addresses) == 0)
 			primaryNIC.Properties.Ips = ptr.To(nicInfo.IPv4Addresses)
-			primaryNIC.Properties.Dhcpv6 = ptr.To(len(nicInfo.IPv6Addresses) == 0)
 			primaryNIC.Properties.Ipv6Ips = ptr.To(nicInfo.IPv6Addresses)
 		}
+
+		primaryNIC.Properties.Dhcp = ptr.To(true)
 
 		items = append(items, nic)
 	}

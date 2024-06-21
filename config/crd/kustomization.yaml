@@ -5,6 +5,7 @@ resources:
 - bases/infrastructure.cluster.x-k8s.io_ionoscloudclusters.yaml
 - bases/infrastructure.cluster.x-k8s.io_ionoscloudmachines.yaml
 - bases/infrastructure.cluster.x-k8s.io_ionoscloudmachinetemplates.yaml
+- bases/infrastructure.cluster.x-k8s.io_ionoscloudclustertemplates.yaml
 #+kubebuilder:scaffold:crdkustomizeresource
 
 commonLabels:
